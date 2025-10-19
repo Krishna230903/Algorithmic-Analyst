@@ -59,35 +59,39 @@ if 'valuation_results' not in st.session_state:
 RISK_FREE_RATE = 0.07  # Indian 10-Year Bond Yield (approx)
 MARKET_RETURN = 0.12   # Nifty 50 Long-Term Average Return
 
-# --- 4. NEW ROBUST DATA SOURCING FUNCTIONS ---
+# --- 4. ROBUST DATA SOURCING FUNCTIONS ---
 
-# --- LISTS OF POSSIBLE NAMES FOR FINANCIAL ITEMS ---
-REVENUE_NAMES = ['Total Revenue', 'Revenue']
-OP_INCOME_NAMES = ['Operating Income', 'Ebit']
-DEPREC_NAMES = ['Depreciation', 'Depreciation & Amortization', 'Depreciation And Amortization']
-OP_CF_NAMES = ['Total Cash From Operating Activities', 'Cash Flow From Operating Activities', 'Operating Cash Flow', 'Change In Cash']
-CAPEX_NAMES = ['Capital Expenditures', 'Change In Capital Stock']
-NET_INCOME_NAMES = ['Net Income', 'Net Income From Continuing Ops']
-EQUITY_NAMES = ['Total Stockholder Equity', 'Total Equity']
+# --- NEW: LISTS OF POSSIBLE NAMES FOR FINANCIAL ITEMS ---
+REVENUE_NAMES = ['Total Revenue', 'Revenue', 'Total Sales']
+OP_INCOME_NAMES = ['Operating Income', 'Ebit', 'Earnings Before Interest and Taxes']
+DEPREC_NAMES = ['Depreciation', 'Depreciation & Amortization', 'Depreciation And Amortization', 'Depreciation Amortization And Accretion']
+OP_CF_NAMES = ['Total Cash From Operating Activities', 'Cash Flow From Operating Activities', 'Operating Cash Flow', 'Change In Cash', 'Cash from Operations']
+CAPEX_NAMES = ['Capital Expenditures', 'Change In Capital Stock', 'Purchase Of Property Plant And Equipment']
+NET_INCOME_NAMES = ['Net Income', 'Net Income From Continuing Ops', 'Net Income Applicable To Common Shares']
+EQUITY_NAMES = ['Total Stockholder Equity', 'Total Equity', 'Total Stockholders Equity']
 TAX_NAMES = ['Income Tax Expense', 'Income Tax (Expense) Benefit, Net']
-EBT_NAMES = ['Income Before Tax', 'Pretax Income']
-INTEREST_NAMES = ['Interest Expense', 'Interest Expense, Net']
-SHORT_DEBT_NAMES = ['Short Long Term Debt', 'Short Term Debt', 'Current Debt']
-LONG_DEBT_NAMES = ['Long Term Debt']
+EBT_NAMES = ['Income Before Tax', 'Pretax Income', 'Earnings Before Tax']
+INTEREST_NAMES = ['Interest Expense', 'Interest Expense, Net', 'Interest Expense Non Operating']
+SHORT_DEBT_NAMES = ['Short Long Term Debt', 'Short Term Debt', 'Current Debt', 'Current Portion Of Long Term Debt']
+LONG_DEBT_NAMES = ['Long Term Debt', 'Long Term Debt Noncurrent']
 
-# <-- NEW HELPER FUNCTION TO FIND ITEMS BY ALIAS -->
-def _get_financial_item(df, names_list):
+# --- NEW: HELPER FUNCTION TO FIND ITEMS BY ALIAS ---
+def _get_financial_item(df, names_list, df_name_for_debug="DataFrame"):
     """
     Searches a DataFrame (like financials, bs, cf) for the first matching item
-    from a list of possible names.
+    from a list of possible names. Includes new debug warning.
     """
     for name in names_list:
         if name in df.index:
             return df.loc[name]
-    # If no name is found, return a Series of NaNs
+    
+    # --- NEW DEBUGGING FEATURE ---
+    st.warning(f"**Data Definition Not Found:** Could not find any of {names_list} in the {df_name_for_debug}. "
+               f"**Available items are:** `{df.index.to_list()}`")
+    
     return pd.Series([np.nan] * len(df.columns), index=df.columns)
 
-# <-- REFACTORED get_target_data -->
+# --- REFACTORED get_target_data ---
 @st.cache_data(ttl=3600)
 def get_target_data(ticker):
     """
@@ -113,24 +117,24 @@ def get_target_data(ticker):
         data['Company Name'] = info.get('shortName', ticker)
 
         # --- Calculate Averages (more stable) ---
-        rev = _get_financial_item(financials, REVENUE_NAMES)
+        rev = _get_financial_item(financials, REVENUE_NAMES, "Income Statement")
         data['Revenue (TTM)'] = rev.iloc[0]
         data['Revenue CAGR (3Y)'] = ((rev.iloc[0] / rev.iloc[3])**(1/3)) - 1
         
-        ebit = _get_financial_item(financials, OP_INCOME_NAMES)
-        dep = _get_financial_item(cf, DEPREC_NAMES)
+        ebit = _get_financial_item(financials, OP_INCOME_NAMES, "Income Statement")
+        dep = _get_financial_item(cf, DEPREC_NAMES, "Cash Flow")
         ebitda = ebit + dep
         data['EBITDA (TTM)'] = ebitda.iloc[0]
         data['EBITDA Margin (3Y Avg)'] = (ebitda / rev).mean()
 
-        op_cf = _get_financial_item(cf, OP_CF_NAMES)
-        capex = _get_financial_item(cf, CAPEX_NAMES)
+        op_cf = _get_financial_item(cf, OP_CF_NAMES, "Cash Flow")
+        capex = _get_financial_item(cf, CAPEX_NAMES, "Cash Flow")
         fcf = op_cf + capex # Capex is negative
         data['FCF (3Y Avg)'] = fcf.iloc[:3].mean() 
         
         # --- P/E Model Metrics ---
-        net_income = _get_financial_item(financials, NET_INCOME_NAMES)
-        equity = _get_financial_item(bs, EQUITY_NAMES)
+        net_income = _get_financial_item(financials, NET_INCOME_NAMES, "Income Statement")
+        equity = _get_financial_item(bs, EQUITY_NAMES, "Balance Sheet")
         data['Earnings Growth (3Y CAGR)'] = ((net_income.iloc[0] / net_income.iloc[3])**(1/3)) - 1
         data['ROE (3Y Avg)'] = (net_income / equity).mean()
         data['P/E Ratio (TTM)'] = info.get('trailingPE', 0)
@@ -140,18 +144,21 @@ def get_target_data(ticker):
         data['EV/EBITDA (TTM)'] = ev / ebitda.iloc[0]
         
         # --- WACC Metrics ---
-        tax_expense = _get_financial_item(financials, TAX_NAMES)
-        ebt = _get_financial_item(financials, EBT_NAMES)
+        tax_expense = _get_financial_item(financials, TAX_NAMES, "Income Statement")
+        ebt = _get_financial_item(financials, EBT_NAMES, "Income Statement")
         data['Tax Rate (3Y Avg)'] = (tax_expense / ebt).mean()
         
-        data['Interest Expense'] = _get_financial_item(financials, INTEREST_NAMES).iloc[0]
-        short_debt = _get_financial_item(bs, SHORT_DEBT_NAMES).iloc[0]
-        long_debt = _get_financial_item(bs, LONG_DEBT_NAMES).iloc[0]
+        data['Interest Expense'] = _get_financial_item(financials, INTEREST_NAMES, "Income Statement").iloc[0]
+        short_debt = _get_financial_item(bs, SHORT_DEBT_NAMES, "Balance Sheet").iloc[0]
+        long_debt = _get_financial_item(bs, LONG_DEBT_NAMES, "Balance Sheet").iloc[0]
         data['Total Debt'] = (short_debt or 0) + (long_debt or 0)
         
         # --- Check for critical missing data ---
-        if pd.isna(data['FCF (3Y Avg)']):
-            st.error(f"Data missing for {ticker}: Could not find Operating Cash Flow or Capex. Try another company.")
+        if pd.isna(op_cf).any():
+            st.error(f"Data missing for {ticker}: Could not find Operating Cash Flow. Check warnings above for available names.")
+            return None
+        if pd.isna(capex).any():
+            st.error(f"Data missing for {ticker}: Could not find Capital Expenditures. Check warnings above for available names.")
             return None
             
         return data
@@ -160,7 +167,7 @@ def get_target_data(ticker):
         st.error(f"An error occurred fetching data for {ticker}: {e}. This company may have non-standard financials.")
         return None
 
-# <-- REFACTORED get_peer_data -->
+# --- REFACTORED get_peer_data ---
 @st.cache_data(ttl=3600)
 def get_peer_data(tickers):
     """Pulls data for the peer group using the robust helper."""
