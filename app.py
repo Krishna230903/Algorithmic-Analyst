@@ -61,21 +61,21 @@ MARKET_RETURN = 0.12   # Nifty 50 Long-Term Average Return
 
 # --- 4. ROBUST DATA SOURCING FUNCTIONS ---
 
-# --- NEW: LISTS OF POSSIBLE NAMES FOR FINANCIAL ITEMS ---
-REVENUE_NAMES = ['Total Revenue', 'Revenue', 'Total Sales']
-OP_INCOME_NAMES = ['Operating Income', 'Ebit', 'Earnings Before Interest and Taxes']
-DEPREC_NAMES = ['Depreciation', 'Depreciation & Amortization', 'Depreciation And Amortization', 'Depreciation Amortization And Accretion']
-OP_CF_NAMES = ['Total Cash From Operating Activities', 'Cash Flow From Operating Activities', 'Operating Cash Flow', 'Change In Cash', 'Cash from Operations']
-CAPEX_NAMES = ['Capital Expenditures', 'Change In Capital Stock', 'Purchase Of Property Plant And Equipment']
-NET_INCOME_NAMES = ['Net Income', 'Net Income From Continuing Ops', 'Net Income Applicable To Common Shares']
-EQUITY_NAMES = ['Total Stockholder Equity', 'Total Equity', 'Total Stockholders Equity']
-TAX_NAMES = ['Income Tax Expense', 'Income Tax (Expense) Benefit, Net']
+# --- UPDATED: LISTS OF POSSIBLE NAMES FOR FINANCIAL ITEMS ---
+REVENUE_NAMES = ['Total Revenue', 'Revenue', 'Total Sales', 'Operating Revenue']
+OP_INCOME_NAMES = ['Operating Income', 'Ebit', 'Earnings Before Interest and Taxes', 'Total Operating Income As Reported']
+DEPREC_NAMES = ['Depreciation', 'Depreciation & Amortization', 'Depreciation And Amortization', 'Depreciation Amortization Depletion', 'Depreciation Amortization And Accretion']
+OP_CF_NAMES = ['Total Cash From Operating Activities', 'Cash Flow From Operating Activities', 'Operating Cash Flow', 'Change In Cash', 'Cash from Operations', 'Cash Flow From Continuing Operating Activities']
+CAPEX_NAMES = ['Capital Expenditures', 'Change In Capital Stock', 'Purchase Of Property Plant And Equipment', 'Capital Expenditure', 'Purchase Of PPE']
+NET_INCOME_NAMES = ['Net Income', 'Net Income From Continuing Ops', 'Net Income Applicable To Common Shares', 'Net Income Common Stockholders', 'Net Income From Continuing Operation Net Minority Interest', 'Net Income Continuous Operations']
+EQUITY_NAMES = ['Total Stockholder Equity', 'Total Equity', 'Total Stockholders Equity', 'Stockholders Equity', 'Common Stock Equity', 'Total Equity Gross Minority Interest']
+TAX_NAMES = ['Income Tax Expense', 'Income Tax (Expense) Benefit, Net', 'Tax Provision']
 EBT_NAMES = ['Income Before Tax', 'Pretax Income', 'Earnings Before Tax']
 INTEREST_NAMES = ['Interest Expense', 'Interest Expense, Net', 'Interest Expense Non Operating']
-SHORT_DEBT_NAMES = ['Short Long Term Debt', 'Short Term Debt', 'Current Debt', 'Current Portion Of Long Term Debt']
-LONG_DEBT_NAMES = ['Long Term Debt', 'Long Term Debt Noncurrent']
+SHORT_DEBT_NAMES = ['Short Long Term Debt', 'Short Term Debt', 'Current Debt', 'Current Portion Of Long Term Debt', 'Current Debt And Capital Lease Obligation']
+LONG_DEBT_NAMES = ['Long Term Debt', 'Long Term Debt Noncurrent', 'Long Term Debt And Capital Lease Obligation']
 
-# --- NEW: HELPER FUNCTION TO FIND ITEMS BY ALIAS ---
+# --- HELPER FUNCTION TO FIND ITEMS BY ALIAS ---
 def _get_financial_item(df, names_list, df_name_for_debug="DataFrame"):
     """
     Searches a DataFrame (like financials, bs, cf) for the first matching item
@@ -85,7 +85,7 @@ def _get_financial_item(df, names_list, df_name_for_debug="DataFrame"):
         if name in df.index:
             return df.loc[name]
     
-    # --- NEW DEBUGGING FEATURE ---
+    # --- DEBUGGING FEATURE ---
     st.warning(f"**Data Definition Not Found:** Could not find any of {names_list} in the {df_name_for_debug}. "
                f"**Available items are:** `{df.index.to_list()}`")
     
@@ -160,6 +160,12 @@ def get_target_data(ticker):
         if pd.isna(capex).any():
             st.error(f"Data missing for {ticker}: Could not find Capital Expenditures. Check warnings above for available names.")
             return None
+        if pd.isna(equity).any():
+            st.error(f"Data missing for {ticker}: Could not find Total Equity. Check warnings above for available names.")
+            return None
+        if pd.isna(tax_expense).any():
+             st.error(f"Data missing for {ticker}: Could not find Tax Provision/Expense. Check warnings above for available names.")
+             return None
             
         return data
 
@@ -261,18 +267,24 @@ def calculate_wacc(target_info):
         Ke = RISK_FREE_RATE + target_info['Beta'] * (MARKET_RETURN - RISK_FREE_RATE)
         
         # 2. Cost of Debt (Kd)
-        if target_info['Total Debt'] == 0: # Handle companies with no debt
+        if target_info['Total Debt'] == 0 or pd.isna(target_info['Total Debt']): # Handle companies with no debt
              Kd = 0
+             D = 0
         else:
-            Kd = target_info['Interest Expense'] / target_info['Total Debt']
+            D = target_info['Total Debt'] 
+            if pd.isna(target_info['Interest Expense']):
+                Kd = 0 # Assume 0 if no interest expense
+            else:
+                Kd = target_info['Interest Expense'] / D
         
         # 3. Market Values
         E = target_info['Market Cap']
-        D = target_info['Total Debt'] 
         V = E + D
         
         # 4. Tax Rate
         tax_rate = target_info['Tax Rate (3Y Avg)']
+        if pd.isna(tax_rate):
+            tax_rate = 0.25 # Assume 25% if not found
         
         # 5. WACC Formula
         wacc = (E/V * Ke) + (D/V * Kd * (1 - tax_rate))
@@ -421,7 +433,7 @@ with tab2:
             target_fundamentals_pe = pd.Series(target_info)[['Earnings Growth (3Y CAGR)', 'ROE (3Y Avg)']]
             target_fundamentals_pe.rename(index={'Earnings Growth (3Y CAGR)': 'Earnings Growth (TTM)'}, inplace=True) 
             
-            if target_fundamentals_pe.isnull().any() or target_info['P/E Ratio (TTM)'] == 0:
+            if target_fundamentals_pe.isnull().any() or target_info['P/E Ratio (TTM)'] == 0 or pd.isna(target_info['P/E Ratio (TTM)']):
                 st.warning(f"{target_ticker} is missing data for this model.")
             else:
                 fair_multiple_pe = model_pe.predict([target_fundamentals_pe])[0]
@@ -436,7 +448,7 @@ with tab2:
     # --- Model 3: Dividend Discount Model (DDM) ---
     with st.container(border=True):
         st.subheader("Model 3: Dividend Discount Model (DDM)")
-        if target_info['Dividend Rate'] == 0:
+        if target_info['Dividend Rate'] == 0 or pd.isna(target_info['Dividend Rate']):
             st.info(f"{target_ticker} does not pay a dividend. DDM is not applicable.")
         else:
             wacc, Ke, Kd = calculate_wacc(target_info)
