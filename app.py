@@ -55,6 +55,7 @@ if 'valuation_results' not in st.session_state:
 def get_stock_data(tickers):
     """
     Pulls a comprehensive set of financial data for a list of tickers.
+    (This is the corrected version)
     """
     data = []
     for ticker in tickers:
@@ -62,31 +63,33 @@ def get_stock_data(tickers):
             stock = yf.Ticker(ticker)
             info = stock.info
             
-            # --- Data for Comps ---
-            ev_ebitda = info.get('enterpriseValue', np.nan) / info.get('ebitda', np.nan)
-            pe_ratio = info.get('trailingPE', np.nan)
-            rev_growth = info.get('revenueGrowth', np.nan)
-            ebitda_margin = info.get('ebitdaMargins', np.nan)
-            roe = info.get('returnOnEquity', np.nan)
-            earnings_growth = info.get('earningsGrowth', np.nan)
-            
-            # --- Data for DCF ---
+            # --- Get raw data ---
+            ebitda = info.get('ebitda', np.nan)
+            enterprise_value = info.get('enterpriseValue', np.nan)
             op_cashflow = info.get('operatingCashflow', np.nan)
             cap_ex = info.get('capitalExpenditure', np.nan)
+
+            # --- Calculate metrics ---
+            # Safe calculation for EV/EBITDA
+            ev_ebitda = (enterprise_value / ebitda) if (pd.notna(ebitda) and ebitda != 0) else np.nan
             fcf = (op_cashflow or 0) + (cap_ex or 0) # CapEx is negative, so we add
-            
+
             data.append({
                 "Ticker": ticker,
                 "Company Name": info.get('shortName', ticker),
                 "Current Price": info.get('currentPrice', np.nan),
+                
                 "EV/EBITDA": ev_ebitda,
-                "P/E Ratio": pe_ratio,
-                "Revenue Growth": rev_growth,
-                "EBITDA Margin": ebitda_margin,
-                "ROE": roe,
-                "Earnings Growth": earnings_growth,
+                "P/E Ratio": info.get('trailingPE', np.nan),
+                
+                "Revenue Growth": info.get('revenueGrowth', np.nan),
+                "EBITDA Margin": info.get('ebitdaMargins', np.nan),
+                "ROE": info.get('returnOnEquity', np.nan),
+                "Earnings Growth": info.get('earningsGrowth', np.nan),
+                
                 "FCF (TTM)": fcf,
-                "Enterprise Value": info.get('enterpriseValue', np.nan),
+                "Enterprise Value": enterprise_value,
+                "EBITDA": ebitda,  # <-- **** THIS IS THE FIX ****
                 "Market Cap": info.get('marketCap', np.nan),
                 "Shares Outstanding": info.get('sharesOutstanding', np.nan)
             })
@@ -333,7 +336,7 @@ with tab3:
                 # 3. Discount all cash flows
                 discounted_fcf = []
                 for year, fcf in enumerate(fcf_forecasts, 1):
-                    dfcf = fcf / (1 + wacc)**year
+                    dfcf = fcf / (1 + wACC)**year
                     discounted_fcf.append(dfcf)
                 
                 d_terminal_value = terminal_value / (1 + wacc)**5
