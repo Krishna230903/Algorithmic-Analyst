@@ -1,5 +1,6 @@
 streamlit
-pandas 
-yfinance 
-scikit-learn 
+pandas
+yfinance
 plotly
+numpy
+scikit-learn
