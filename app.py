@@ -59,18 +59,44 @@ if 'valuation_results' not in st.session_state:
 RISK_FREE_RATE = 0.07  # Indian 10-Year Bond Yield (approx)
 MARKET_RETURN = 0.12   # Nifty 50 Long-Term Average Return
 
-# --- 4. NEW DATA SOURCING FUNCTIONS ---
+# --- 4. NEW ROBUST DATA SOURCING FUNCTIONS ---
 
+# --- LISTS OF POSSIBLE NAMES FOR FINANCIAL ITEMS ---
+REVENUE_NAMES = ['Total Revenue', 'Revenue']
+OP_INCOME_NAMES = ['Operating Income', 'Ebit']
+DEPREC_NAMES = ['Depreciation', 'Depreciation & Amortization', 'Depreciation And Amortization']
+OP_CF_NAMES = ['Total Cash From Operating Activities', 'Cash Flow From Operating Activities', 'Operating Cash Flow', 'Change In Cash']
+CAPEX_NAMES = ['Capital Expenditures', 'Change In Capital Stock']
+NET_INCOME_NAMES = ['Net Income', 'Net Income From Continuing Ops']
+EQUITY_NAMES = ['Total Stockholder Equity', 'Total Equity']
+TAX_NAMES = ['Income Tax Expense', 'Income Tax (Expense) Benefit, Net']
+EBT_NAMES = ['Income Before Tax', 'Pretax Income']
+INTEREST_NAMES = ['Interest Expense', 'Interest Expense, Net']
+SHORT_DEBT_NAMES = ['Short Long Term Debt', 'Short Term Debt', 'Current Debt']
+LONG_DEBT_NAMES = ['Long Term Debt']
+
+# <-- NEW HELPER FUNCTION TO FIND ITEMS BY ALIAS -->
+def _get_financial_item(df, names_list):
+    """
+    Searches a DataFrame (like financials, bs, cf) for the first matching item
+    from a list of possible names.
+    """
+    for name in names_list:
+        if name in df.index:
+            return df.loc[name]
+    # If no name is found, return a Series of NaNs
+    return pd.Series([np.nan] * len(df.columns), index=df.columns)
+
+# <-- REFACTORED get_target_data -->
 @st.cache_data(ttl=3600)
 def get_target_data(ticker):
     """
     Performs a deep-dive data pull for ONLY the target company.
-    Pulls raw statements to calculate robust metrics.
+    Uses the robust _get_financial_item helper.
     """
     stock = yf.Ticker(ticker)
     info = stock.info
     
-    # Get 4 years of data to calculate 3-year metrics
     financials = stock.financials.iloc[:, :4]
     bs = stock.balance_sheet.iloc[:, :4]
     cf = stock.cash_flow.iloc[:, :4]
@@ -82,30 +108,30 @@ def get_target_data(ticker):
         data['Current Price'] = info.get('currentPrice', 0)
         data['Market Cap'] = info.get('marketCap', 0)
         data['Shares Outstanding'] = info.get('sharesOutstanding', 0)
-        data['Beta'] = info.get('beta', 1.0) # Default to 1.0 if missing
-        data['Dividend Rate'] = info.get('dividendRate', 0) # For DDM
+        data['Beta'] = info.get('beta', 1.0) 
+        data['Dividend Rate'] = info.get('dividendRate', 0)
         data['Company Name'] = info.get('shortName', ticker)
 
         # --- Calculate Averages (more stable) ---
-        rev = financials.loc['Total Revenue']
+        rev = _get_financial_item(financials, REVENUE_NAMES)
         data['Revenue (TTM)'] = rev.iloc[0]
         data['Revenue CAGR (3Y)'] = ((rev.iloc[0] / rev.iloc[3])**(1/3)) - 1
         
-        ebit = financials.loc['Operating Income']
-        dep = cf.loc['Depreciation']
+        ebit = _get_financial_item(financials, OP_INCOME_NAMES)
+        dep = _get_financial_item(cf, DEPREC_NAMES)
         ebitda = ebit + dep
         data['EBITDA (TTM)'] = ebitda.iloc[0]
         data['EBITDA Margin (3Y Avg)'] = (ebitda / rev).mean()
 
-        op_cf = cf.loc['Total Cash From Operating Activities']
-        capex = cf.loc['Capital Expenditures']
+        op_cf = _get_financial_item(cf, OP_CF_NAMES)
+        capex = _get_financial_item(cf, CAPEX_NAMES)
         fcf = op_cf + capex # Capex is negative
-        data['FCF (3Y Avg)'] = fcf.iloc[:3].mean() # Use 3-year avg for DCF base
+        data['FCF (3Y Avg)'] = fcf.iloc[:3].mean() 
         
         # --- P/E Model Metrics ---
-        net_income = financials.loc['Net Income']
+        net_income = _get_financial_item(financials, NET_INCOME_NAMES)
+        equity = _get_financial_item(bs, EQUITY_NAMES)
         data['Earnings Growth (3Y CAGR)'] = ((net_income.iloc[0] / net_income.iloc[3])**(1/3)) - 1
-        equity = bs.loc['Total Stockholder Equity']
         data['ROE (3Y Avg)'] = (net_income / equity).mean()
         data['P/E Ratio (TTM)'] = info.get('trailingPE', 0)
         
@@ -114,43 +140,48 @@ def get_target_data(ticker):
         data['EV/EBITDA (TTM)'] = ev / ebitda.iloc[0]
         
         # --- WACC Metrics ---
-        tax_expense = financials.loc['Income Tax Expense']
-        ebt = financials.loc['Income Before Tax']
+        tax_expense = _get_financial_item(financials, TAX_NAMES)
+        ebt = _get_financial_item(financials, EBT_NAMES)
         data['Tax Rate (3Y Avg)'] = (tax_expense / ebt).mean()
         
-        data['Interest Expense'] = financials.loc['Interest Expense'].iloc[0]
-        data['Total Debt'] = bs.loc['Short Long Term Debt'].iloc[0] + bs.loc['Long Term Debt'].iloc[0]
+        data['Interest Expense'] = _get_financial_item(financials, INTEREST_NAMES).iloc[0]
+        short_debt = _get_financial_item(bs, SHORT_DEBT_NAMES).iloc[0]
+        long_debt = _get_financial_item(bs, LONG_DEBT_NAMES).iloc[0]
+        data['Total Debt'] = (short_debt or 0) + (long_debt or 0)
         
+        # --- Check for critical missing data ---
+        if pd.isna(data['FCF (3Y Avg)']):
+            st.error(f"Data missing for {ticker}: Could not find Operating Cash Flow or Capex. Try another company.")
+            return None
+            
         return data
 
-    except KeyError as e:
-        st.error(f"Data missing for {ticker}: {e}. Try another company.")
-        return None
     except Exception as e:
-        st.error(f"An error occurred fetching data for {ticker}: {e}")
+        st.error(f"An error occurred fetching data for {ticker}: {e}. This company may have non-standard financials.")
         return None
 
+# <-- REFACTORED get_peer_data -->
 @st.cache_data(ttl=3600)
 def get_peer_data(tickers):
-    """
-    Pulls data for the peer group, focusing only on metrics for regression.
-    This is faster than a deep-dive for every peer.
-    """
+    """Pulls data for the peer group using the robust helper."""
     data = []
     for ticker in tickers:
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
             
-            # Get 4 years of financials
-            rev = stock.financials.loc['Total Revenue'].iloc[:4]
-            ebit = stock.financials.loc['Operating Income'].iloc[:4]
-            dep = stock.cash_flow.loc['Depreciation'].iloc[:4]
-            ebitda = ebit + dep
-            net_income = stock.financials.loc['Net Income'].iloc[:4]
-            equity = stock.balance_sheet.loc['Total Stockholder Equity'].iloc[:4]
+            financials = stock.financials.iloc[:, :4]
+            bs = stock.balance_sheet.iloc[:, :4]
+            cf = stock.cash_flow.iloc[:, :4]
 
             # Calculate robust metrics
+            rev = _get_financial_item(financials, REVENUE_NAMES)
+            ebit = _get_financial_item(financials, OP_INCOME_NAMES)
+            dep = _get_financial_item(cf, DEPREC_NAMES)
+            ebitda = ebit + dep
+            net_income = _get_financial_item(financials, NET_INCOME_NAMES)
+            equity = _get_financial_item(bs, EQUITY_NAMES)
+            
             rev_cagr = ((rev.iloc[0] / rev.iloc[-1])**(1/len(rev-1))) - 1
             avg_ebitda_margin = (ebitda / rev).mean()
             avg_roe = (net_income / equity).mean()
@@ -162,7 +193,7 @@ def get_peer_data(tickers):
                 "Revenue CAGR (3Y)": rev_cagr,
                 "EBITDA Margin (3Y Avg)": avg_ebitda_margin,
                 "ROE (3Y Avg)": avg_roe,
-                "Earnings Growth (TTM)": info.get('earningsGrowth', np.nan) # Use TTM for peers as CAGR is slow
+                "Earnings Growth (TTM)": info.get('earningsGrowth', np.nan) 
             })
         except Exception as e:
             pass # Skip ticker if data is bad
@@ -223,11 +254,14 @@ def calculate_wacc(target_info):
         Ke = RISK_FREE_RATE + target_info['Beta'] * (MARKET_RETURN - RISK_FREE_RATE)
         
         # 2. Cost of Debt (Kd)
-        Kd = target_info['Interest Expense'] / target_info['Total Debt']
+        if target_info['Total Debt'] == 0: # Handle companies with no debt
+             Kd = 0
+        else:
+            Kd = target_info['Interest Expense'] / target_info['Total Debt']
         
         # 3. Market Values
         E = target_info['Market Cap']
-        D = target_info['Total Debt'] # Using book value of debt as proxy
+        D = target_info['Total Debt'] 
         V = E + D
         
         # 4. Tax Rate
@@ -286,7 +320,7 @@ try:
         target_info = get_target_data(target_ticker)
     
     if target_info is None:
-        st.error("Failed to get target data. App cannot proceed.")
+        st.error(f"Failed to get target data for {target_ticker}. App cannot proceed.")
         st.stop()
         
     with st.spinner(f"Fetching data for {len(peer_tickers)} peers..."):
@@ -357,7 +391,7 @@ with tab2:
             else:
                 fair_multiple_ev = model_ev.predict([target_fundamentals_ev])[0]
                 fair_ev = fair_multiple_ev * target_info['EBITDA (TTM)']
-                net_debt = target_info['Market Cap'] - target_info['Market Cap'] # EV - Market Cap
+                net_debt = target_info['Total Debt'] 
                 fair_equity_value_ev = fair_ev - net_debt
                 fair_price_ev = fair_equity_value_ev / target_info['Shares Outstanding']
                 
@@ -378,7 +412,7 @@ with tab2:
             st.error("Not enough clean peer data to build the P/E model.")
         else:
             target_fundamentals_pe = pd.Series(target_info)[['Earnings Growth (3Y CAGR)', 'ROE (3Y Avg)']]
-            target_fundamentals_pe.rename(index={'Earnings Growth (3Y CAGR)': 'Earnings Growth (TTM)'}, inplace=True) # Align col names
+            target_fundamentals_pe.rename(index={'Earnings Growth (3Y CAGR)': 'Earnings Growth (TTM)'}, inplace=True) 
             
             if target_fundamentals_pe.isnull().any() or target_info['P/E Ratio (TTM)'] == 0:
                 st.warning(f"{target_ticker} is missing data for this model.")
@@ -408,7 +442,6 @@ with tab2:
                 if Ke <= g_long_ddm:
                     st.error("Cost of Equity (Ke) must be greater than growth rate (g).")
                 else:
-                    # Price = D1 / (Ke - g)  where D1 = D0 * (1+g)
                     d0 = target_info['Dividend Rate']
                     d1 = d0 * (1 + g_long_ddm)
                     ddm_price = d1 / (Ke - g_long_ddm)
@@ -426,27 +459,24 @@ with tab3:
     with st.container(border=True):
         st.subheader("DCF Assumptions")
         
-        # 1. Get Base FCF
         base_fcf = target_info['FCF (3Y Avg)']
         if pd.isna(base_fcf) or base_fcf == 0:
             st.error("Cannot run DCF: 3-Year Avg. Free Cash Flow is missing or zero.")
         else:
             st.metric("3-Year Average FCF (Base)", f"₹{base_fcf:,.0f}")
             
-            # 2. Calculate WACC
             wacc, Ke, Kd = calculate_wacc(target_info)
             if wacc is None:
                 st.error("Could not calculate WACC. Check company data.")
                 st.stop()
             
-            st.subheader("Calculated WACC: {wacc:.2%}")
+            st.subheader(f"Calculated WACC: {wacc:.2%}")
             with st.expander("View WACC Calculation"):
                 st.markdown(f"- **Cost of Equity (Ke):** {Ke:.2%} (Risk-Free: {RISK_FREE_RATE:.1%}, Beta: {target_info['Beta']:.2f}, Market Return: {MARKET_RETURN:.1%})")
                 st.markdown(f"- **Cost of Debt (Kd):** {Kd:.2%}")
                 st.markdown(f"- **After-Tax Cost of Debt:** {Kd * (1 - target_info['Tax Rate (3Y Avg)']):.2%}")
                 st.markdown(f"- **Weights:** Equity: {target_info['Market Cap'] / (target_info['Market Cap'] + target_info['Total Debt']):.1%}, Debt: {target_info['Total Debt'] / (target_info['Market Cap'] + target_info['Total Debt']):.1%}")
 
-            # 3. Get User Assumptions
             col1, col2, col3 = st.columns(3)
             wacc_adj = col1.slider("Adjust WACC", -0.02, 0.02, 0.0, 0.001, format="%.3f")
             g_short = col2.slider("FCF Growth (Yrs 1-5)", 0.0, 0.25, 0.10, 0.01, key="dcf_g_short")
@@ -454,7 +484,6 @@ with tab3:
             
             final_wacc = wacc + wacc_adj
 
-            # 4. Run DCF
             if final_wacc <= g_long:
                 st.error("Adjusted WACC must be greater than Terminal Growth Rate.")
             else:
@@ -466,20 +495,18 @@ with tab3:
                 
                 dcf_enterprise_value = sum(discounted_fcf) + d_terminal_value
                 
-                net_debt = target_info['Total Debt'] # Simple proxy
+                net_debt = target_info['Total Debt'] 
                 dcf_equity_value = dcf_enterprise_value - net_debt
                 dcf_price_per_share = dcf_equity_value / target_info['Shares Outstanding']
                 
                 st.session_state.valuation_results["DCF"] = dcf_price_per_share
                 
-                # 5. Display Results
                 st.subheader("DCF Valuation Results")
                 col1, col2, col3 = st.columns(3)
                 col1.metric("Implied Enterprise Value", f"₹{dcf_enterprise_value:,.0f}")
                 col2.metric("Implied Equity Value", f"₹{dcf_equity_value:,.0f}")
                 col3.metric("Implied Fair Price per Share", f"₹{dcf_price_per_share:,.2f}")
                 
-                # 6. Sensitivity Analysis
                 st.subheader("Sensitivity Analysis: Price per Share")
                 sensitivity_df = create_sensitivity_table(base_fcf, g_short, final_wacc, g_long, net_debt, target_info['Shares Outstanding'])
                 st.dataframe(sensitivity_df)
